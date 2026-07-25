@@ -24,6 +24,7 @@ Requires-Dist: jinja2>=3.1; extra == "web"
 Requires-Dist: uvicorn>=0.30; extra == "web"
 Provides-Extra: pdf
 Requires-Dist: pymupdf>=1.24; extra == "pdf"
+Requires-Dist: reportlab>=4.0; extra == "pdf"
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0; extra == "dev"
 Requires-Dist: pytest-cov>=5.0; extra == "dev"
