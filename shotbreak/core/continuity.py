@@ -87,8 +87,11 @@ def walk_element_continuity(
     walks: list[ContinuityWalk] = []
     for thread_id, thread_rows in threads.items():
         states: list[dict] = []
-        previous_state: dict = {}
-        previous_date: str | None = None
+        # Last non-null date marker seen so far in this thread — most scenes
+        # carry no marker at all (only explicit transition scenes do, per
+        # DESIGN.md §3.1.4), so a jump must be measured against the last
+        # *seen* marker, not the literal previous scene's (usually empty) one.
+        last_marker_date: str | None = None
 
         for i, row in enumerate(thread_rows):
             state: dict = {}
@@ -97,8 +100,8 @@ def walk_element_continuity(
 
             # Detect time jumps from story_date_marker
             current_date = row["story_date_marker"]
-            if current_date and previous_date:
-                combined = f"{current_date} {previous_date}"
+            if current_date and last_marker_date:
+                combined = f"{current_date} {last_marker_date}"
                 years = _parse_years(combined)
                 if years is not None and years >= time_jump_threshold_years:
                     is_checkpoint = True
@@ -120,7 +123,8 @@ def walk_element_continuity(
                 "is_checkpoint": is_checkpoint,
             })
 
-            previous_date = current_date
+            if current_date:
+                last_marker_date = current_date
 
         walks.append(ContinuityWalk(
             element_id=element_id,
@@ -161,27 +165,33 @@ def write_continuity_states(
             count += 1
 
             if s["is_checkpoint"]:
-                _write_aging_checkpoint(conn, element_id, s["scene_id"], s["changes"])
+                write_aging_checkpoint(conn, element_id, walk.thread_id, s["scene_id"], s["changes"])
 
     conn.commit()
     return count
 
 
-def _write_aging_checkpoint(
+def write_aging_checkpoint(
     conn: sqlite3.Connection,
     element_id: int,
+    story_thread_id: int,
     scene_id: int,
-    changes_json: str,
-) -> None:
-    """Write a character_era row for an aging checkpoint."""
+    changes_json: str | list,
+) -> int:
+    """Write a character_era row for an aging checkpoint. Returns the new row id.
+
+    requires_review defaults to 1 (DB default) — per DESIGN.md §3.4.4, an aging
+    checkpoint must be human-approved before it takes effect as a new bible version.
+    """
     changes = json.loads(changes_json) if isinstance(changes_json, str) else changes_json
     label = changes[0] if changes else "Aging checkpoint"
 
-    conn.execute(
-        """INSERT INTO character_era (element_id, label, story_day_range_start)
-           VALUES (?, ?, ?)""",
-        (element_id, label, f"scene {scene_id}"),
+    cur = conn.execute(
+        """INSERT INTO character_era (element_id, story_thread_id, era_label, scene_id)
+           VALUES (?, ?, ?, ?)""",
+        (element_id, story_thread_id, label, scene_id),
     )
+    return cur.lastrowid
 
 
 def detect_continuity_breaks(

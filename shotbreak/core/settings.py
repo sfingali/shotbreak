@@ -36,44 +36,6 @@ class Setting:
     updated_at: str = ""
 
 
-def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Add settings tables if they don't exist (insertion-safe migration)."""
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS setting (
-            id INTEGER PRIMARY KEY,
-            project_id INTEGER REFERENCES project(id),
-            scope TEXT NOT NULL DEFAULT 'location',
-            scope_key TEXT NOT NULL DEFAULT '',
-            key TEXT NOT NULL,
-            value TEXT NOT NULL,
-            metadata_json TEXT DEFAULT '{}',
-            created_at TEXT DEFAULT (datetime('now')),
-            updated_at TEXT DEFAULT (datetime('now')),
-            UNIQUE(project_id, scope, scope_key, key)
-        );
-
-        CREATE TABLE IF NOT EXISTS setting_dependency (
-            id INTEGER PRIMARY KEY,
-            project_id INTEGER REFERENCES project(id),
-            parent_setting_id INTEGER REFERENCES setting(id),
-            child_type TEXT NOT NULL,    -- 'scene', 'element'
-            child_id INTEGER NOT NULL,   -- scene.id or element.id
-            created_at TEXT DEFAULT (datetime('now')),
-            UNIQUE(project_id, parent_setting_id, child_type, child_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS stale_tracker (
-            id INTEGER PRIMARY KEY,
-            project_id INTEGER REFERENCES project(id),
-            target_type TEXT NOT NULL,   -- 'scene_description', 'bible'
-            target_id INTEGER NOT NULL,  -- physical_description.id
-            stale_reason TEXT NOT NULL,  -- description of what changed upstream
-            created_at TEXT DEFAULT (datetime('now')),
-            UNIQUE(project_id, target_type, target_id)
-        );
-    """)
-
-
 def upsert_setting(
     conn: sqlite3.Connection,
     project_id: int,
@@ -84,7 +46,6 @@ def upsert_setting(
     metadata: dict | None = None,
 ) -> int:
     """Create or update a setting. Returns setting.id."""
-    _ensure_schema(conn)
     meta = json.dumps(metadata or {})
 
     row = conn.execute(
@@ -163,7 +124,6 @@ def link_setting_to_child(
     child_id: int,
 ) -> None:
     """Record that a child (scene or element) inherits from this setting."""
-    _ensure_schema(conn)
     conn.execute(
         "INSERT OR IGNORE INTO setting_dependency (project_id, parent_setting_id, child_type, child_id) VALUES (?,?,?,?)",
         (project_id, setting_id, child_type, child_id),
@@ -182,7 +142,6 @@ def get_effective_settings(
 
     Order: global → location (if known) → group (if known). Returns dict of key→value.
     """
-    _ensure_schema(conn)
 
     effective: dict[str, str] = {}
 
