@@ -182,7 +182,7 @@ def _is_character_cue(line: str) -> bool:
         return False
     # Must be uppercase, possibly with (O.S.), (V.O.), (CONT'D), ^ for dual dialogue
     cue = re.sub(r"\^$", "", stripped).strip()
-    return bool(re.match(r"^[A-Z][A-Z0-9\s\.']{1,40}$", cue))
+    return bool(re.match(r"^[A-Z][A-Z0-9\s\.']{1,40}(?:\s*\([^)]*\))?$", cue))
 
 
 def _is_transition(line: str) -> bool:
@@ -370,9 +370,13 @@ def parse_fountain(text: str, lang: str = "en") -> list[ParsedScene]:
         is_montage = any(kw in current_slugline.upper() for kw in MONTAGE_KEYWORDS)
         nar_pos = _detect_narrative_position(current_slugline, body_start_line)
         date_marker = _detect_date_marker(current_slugline, body_start_line)
-        auto_num += 1
-        scene_num = parsed["scene_number"] or str(auto_num)
-        scene_num_src = "script" if parsed["scene_number"] else "auto"
+        if parsed["scene_number"]:
+            scene_num = parsed["scene_number"]
+            scene_num_src = "script"
+        else:
+            auto_num += 1
+            scene_num = f"A{auto_num}"
+            scene_num_src = "auto"
         montage_beats = _extract_montage_beats(current_body) if is_montage else []
 
         scenes.append(ParsedScene(
