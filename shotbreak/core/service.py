@@ -41,8 +41,10 @@ def import_script(
     suffix = path.suffix.lower()
     if suffix in (".fountain",):
         script_format = "fountain"
-    elif suffix in (".fdx", ".xml"):
+    elif suffix == ".fdx":
         script_format = "fdx"
+    elif suffix == ".fadein":
+        script_format = "fadein"
     elif suffix == ".pdf":
         script_format = "pdf"
     else:
@@ -55,7 +57,13 @@ def import_script(
     if script_format == "fountain":
         scenes = _parse_fountain(raw_text, lang=lang)
     elif script_format == "fdx":
-        raise NotImplementedError("FDX parser not yet implemented")
+        from shotbreak.core.fdx_parser import parse_fdx as _parse_fdx
+
+        scenes = _parse_fdx(raw_text)
+    elif script_format == "fadein":
+        from shotbreak.core.fadein_parser import parse_fadein as _parse_fadein
+
+        scenes = _parse_fadein(raw_text)
     else:
         raise NotImplementedError("PDF parser not yet implemented")
 
