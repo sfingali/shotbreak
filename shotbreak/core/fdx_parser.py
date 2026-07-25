@@ -109,6 +109,8 @@ def parse_fdx(text: str) -> list[ParsedScene]:
     current_body: list[str] = []
     current_chars: list[str] = []
     current_page_eighths: int = 1
+    current_narrative: str | None = None
+    current_scene_num: str = ""
     auto_num: int = 0
     has_dual: bool = False
 
@@ -121,35 +123,31 @@ def parse_fdx(text: str) -> list[ParsedScene]:
         if ptype == "Scene Heading":
             # Save previous scene
             if current_slugline is not None:
-                parsed = _parse_slugline(current_slugline)
                 auto_num += 1
-                # FDX scene numbers from SceneProperties
-                sp = para.find("SceneProperties")
-                scene_num = sp.get("Number", "") if sp is not None else ""
-                if not scene_num:
-                    scene_num = str(auto_num)
-
+                parsed_slug = _parse_slugline(current_slugline)
                 scenes.append(ParsedScene(
-                    scene_number=scene_num,
-                    scene_number_source="script" if sp is not None and sp.get("Number") else "auto",
+                    scene_number=current_scene_num or str(auto_num),
+                    scene_number_source="script" if current_scene_num else "auto",
                     slugline=current_slugline,
-                    interior_exterior=parsed["interior_exterior"],
-                    location=parsed["location"],
-                    set_name=parsed["set_name"],
-                    time_of_day=parsed["time_of_day"],
+                    interior_exterior=parsed_slug["interior_exterior"],
+                    location=parsed_slug["location"],
+                    set_name=parsed_slug["set_name"],
+                    time_of_day=parsed_slug["time_of_day"],
                     body_lines=current_body.copy(),
                     characters=list(set(current_chars)),
                     page_eighths=current_page_eighths,
                     has_dual_dialogue=has_dual,
-                    narrative_position_hint=_detect_narrative(text),
+                    narrative_position_hint=current_narrative,
                 ))
 
-            # Start new scene
+            # Start new scene — capture slugline, narrative hint, scene number
             current_slugline = text
+            current_narrative = _detect_narrative(text)
             current_body = []
             current_chars = []
             has_dual = False
             sp = para.find("SceneProperties")
+            current_scene_num = sp.get("Number", "") if sp is not None else ""
             current_page_eighths = (
                 _estimate_page_eighths(sp.get("Length", "1/8"))
                 if sp is not None
@@ -171,8 +169,8 @@ def parse_fdx(text: str) -> list[ParsedScene]:
         parsed = _parse_slugline(current_slugline)
         auto_num += 1
         scenes.append(ParsedScene(
-            scene_number=str(auto_num),
-            scene_number_source="auto",
+            scene_number=current_scene_num or str(auto_num),
+            scene_number_source="script" if current_scene_num else "auto",
             slugline=current_slugline,
             interior_exterior=parsed["interior_exterior"],
             location=parsed["location"],
@@ -182,6 +180,7 @@ def parse_fdx(text: str) -> list[ParsedScene]:
             characters=list(set(current_chars)),
             page_eighths=current_page_eighths,
             has_dual_dialogue=has_dual,
+            narrative_position_hint=current_narrative,
         ))
 
     return scenes

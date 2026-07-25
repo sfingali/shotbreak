@@ -137,7 +137,6 @@ def build_character_bible(
 
     Returns dict with bible_id, bible_json, llm_tokens.
     """
-    _settings._ensure_schema(conn)
 
     # Get character info
     el = conn.execute(
@@ -258,7 +257,6 @@ def render_scene_descriptions(
     If scene_ids is None, renders all scenes the character appears in.
     Skips scenes that already have a current description (idempotent).
     """
-    _settings._ensure_schema(conn)
 
     # Get bible
     bible_row = conn.execute(
