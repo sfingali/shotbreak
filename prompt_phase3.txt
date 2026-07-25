@@ -1,0 +1,52 @@
+Read DESIGN.md first, especially the Physical Description Engine sections.
+Build Phase 3 of Shotbreak — the physical description engine and continuity system.
+
+The project at /opt/data/home/projects/shotbreak already has:
+- Full SQLite schema with all tables
+- Working LLM provider layer (core/llm/provider.py, cost.py) 
+- Config system with DeepSeek provider
+- CLI with import, run, export commands
+- 28 elements in the DB from project 1 (THE-WAIF, 279 scenes)
+
+CRITICAL ARCHITECTURAL REQUIREMENT — HIERARCHICAL SETTINGS:
+
+Screenplays have implicit hierarchical knowledge. A setting described once cascades to all scenes at that location. Time period, season, geography — stated once, silently inherited by everything downstream. Examples from THE-WAIF:
+- The cabin: "Cedar-siding browned like old pennies. Windows shuttered internally and glass lined with metal bars." Described once in scene 31, applies to ALL cabin scenes (32-39, 233-269).
+- Time period: modern day (cell phones, Forester SUV, electric razor). Never stated, implied by props.
+- Season: autumn ("pool sits covered in autumn leaves" scene 14).
+- Geography: Broken Bow, upstate New York. Mentioned once, affects lighting, weather, foliage everywhere.
+
+When an upstream setting changes, ALL dependent scenes must reflect the change. This is a directed acyclic graph, not point-to-point descriptions.
+
+IMPLEMENT THIS AS:
+
+1. A new 'setting' category in the element system. Settings are elements with element_type='setting'. They have a scope (global, location, scene_group).
+2. Settings cascade: global settings → location settings → scene-specific descriptions.
+3. A setting_inheritance table or JSON field tracking which scenes inherit from which settings.
+4. When a setting description is regenerated, all dependent scene descriptions are flagged as stale.
+5. The physical description engine reads settings from parent scopes before generating per-scene output.
+
+BUILD THESE FILES:
+
+1. core/description_engine.py - Two-phase physical description system WITH hierarchical settings:
+   Phase A (Bible Construction): One LLM call per character that reads the ENTIRE character arc (all scene bodies joined) AND inherited settings (global + location-level). Produces canonical bible. Writes to physical_description (scene_id=NULL).
+   Phase B (Per-Scene Rendering): For each scene in story_order. Input: bible + inherited settings + previous continuity state + current scene text. Output: visible attributes + deltas + new state.
+   Settings cascade: before rendering a scene, collect global settings → location settings → previous scene state. Feed all to LLM as context.
+
+2. core/continuity.py - Continuity state machine:
+   Walks scenes in story_order per story_thread. Handles flashback threads as separate continuity lines. Detects time jumps → aging checkpoints. Detects contradictions → continuity_breaks.
+   Settings propagation: when a setting changes, uses the inheritance graph to flag stale scene descriptions.
+
+3. core/settings.py - NEW: Hierarchical settings engine:
+   Setting scopes: global, location, scene_group. 
+   Inheritance tracking: which scenes depend on which settings.
+   Staleness: when setting X changes, mark all descendants for re-render.
+   Apply settings to scene context: gather all active settings for a scene before description generation.
+
+4. Update core/service.py - Add: generate_character_bible(), generate_scene_descriptions(), update_setting(), list_stale_descriptions()
+
+5. Update CLI - Add: shotbreak bible PROJECT_ID --element-id ID, shotbreak describe PROJECT_ID --element-id ID, shotbreak setting PROJECT_ID --location "CABIN" --description "..."
+
+6. Add tests/test_continuity.py
+
+Commit after each working piece. DB at ./data/shotbreak.db.

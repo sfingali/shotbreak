@@ -324,3 +324,102 @@ def get_run_status(run_id: int, data_dir: str | Path = "./data") -> dict:
         "input_tokens": cost_row["input_tokens"],
         "output_tokens": cost_row["output_tokens"],
     }
+
+
+def generate_character_bible(
+    project_id: int,
+    element_id: int,
+    provider_name: str = "deepseek",
+    data_dir: str | Path = "./data",
+    config_path: str | Path = "config.yaml",
+) -> dict:
+    """Generate a character bible (Phase A) by reading the full character arc."""
+    from shotbreak.core import config as _config
+    from shotbreak.core import description_engine as _de
+
+    cfg = _config.load_config(config_path)
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+    return _de.build_character_bible(conn, cfg, project_id, element_id, provider_name)
+
+
+def generate_scene_descriptions(
+    project_id: int,
+    element_id: int,
+    provider_name: str = "deepseek",
+    scene_ids: list[int] | None = None,
+    data_dir: str | Path = "./data",
+    config_path: str | Path = "config.yaml",
+) -> dict:
+    """Generate per-scene physical descriptions (Phase B) for a character."""
+    from shotbreak.core import config as _config
+    from shotbreak.core import description_engine as _de
+
+    cfg = _config.load_config(config_path)
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+    return _de.render_scene_descriptions(
+        conn, cfg, project_id, element_id, provider_name, scene_ids=scene_ids,
+    )
+
+
+def update_setting(
+    project_id: int,
+    scope: str,
+    scope_key: str,
+    key: str,
+    value: str,
+    data_dir: str | Path = "./data",
+) -> dict:
+    """Create or update a hierarchical setting. Marks dependents as stale."""
+    from shotbreak.core import settings as _settings_lib
+
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+    sid = _settings_lib.upsert_setting(conn, project_id, scope, scope_key, key, value)
+    return {"setting_id": sid, "scope": scope, "scope_key": scope_key, "key": key}
+
+
+def list_settings(
+    project_id: int,
+    scope: str | None = None,
+    data_dir: str | Path = "./data",
+) -> list[dict]:
+    """List all settings, optionally filtered by scope."""
+    from shotbreak.core import settings as _settings_lib
+
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+    return [
+        {"id": s.id, "scope": s.scope, "scope_key": s.scope_key, "key": s.key, "value": s.value}
+        for s in _settings_lib.get_all_settings(conn, project_id, scope=scope)
+    ]
+
+
+def list_stale_descriptions(
+    project_id: int,
+    data_dir: str | Path = "./data",
+) -> list[dict]:
+    """List descriptions/bibles that need re-rendering due to changed settings."""
+    from shotbreak.core import settings as _settings_lib
+
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+    return _settings_lib.list_stale(conn, project_id)
+
+
+def list_continuity_breaks(
+    project_id: int,
+    data_dir: str | Path = "./data",
+    status: str | None = "open",
+) -> list[dict]:
+    """List continuity breaks requiring human review."""
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+    query = "SELECT * FROM continuity_break WHERE element_id IN (SELECT id FROM element WHERE project_id=?)"
+    params: list = [project_id]
+    if status:
+        query += " AND status=?"
+        params.append(status)
+    rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]

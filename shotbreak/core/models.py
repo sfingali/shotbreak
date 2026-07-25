@@ -246,3 +246,16 @@ class TagLibrary:
     keywords: str = "[]"              # JSON array
     language: str = "en"
     preset_type: str = "canon"        # 'canon','user'
+
+
+@dataclass
+class CharacterEra:
+    id: int = 0
+    element_id: int = 0
+    story_thread_id: int | None = None
+    era_label: str = ""
+    story_date_marker: str | None = None
+    scene_id: int | None = None
+    bible_version_id: int | None = None
+    requires_review: bool = True
+    created_at: str = ""
