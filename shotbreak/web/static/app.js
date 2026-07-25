@@ -39,7 +39,7 @@
     const res = await fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body || {}),
+      body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`POST ${path} failed (${res.status})`);
     return res.json();
@@ -51,7 +51,7 @@
     return res.json();
   }
 
-  // --- routing: #/  |  #/project/:id  |  #/project/:id/scene/:id  |  #/project/:id/element/:id ---
+  // --- routing ---
 
   function parseHash() {
     const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
@@ -61,7 +61,7 @@
         return { view: 'element', projectId, elemId: Number(parts[3]) };
       }
       if (parts[2] === 'scene' && parts[3]) {
-        return { view: 'breakdown', projectId, sceneId: Number(parts[3]) };
+        return { view: 'scene', projectId, sceneId: Number(parts[3]) };
       }
       return { view: 'breakdown', projectId, sceneId: null };
     }
@@ -88,6 +88,7 @@
     app.innerHTML = '<div class="loading">Loading&hellip;</div>';
     try {
       if (state.view === 'breakdown') await renderBreakdown(state);
+      else if (state.view === 'scene') await renderScene(state);
       else if (state.view === 'element') await renderElement(state);
       else await renderProjects();
     } catch (err) {
@@ -169,7 +170,7 @@
     `;
   }
 
-  // --- breakdown view: scene list + element grid ---
+  // --- breakdown view ---
 
   async function renderBreakdown(state) {
     const { projectId } = state;
@@ -192,6 +193,21 @@
     app.innerHTML = `
       <h1>${escapeHtml(project.name)}</h1>
       <div class="subtitle">${project.scene_count} scenes &middot; ${project.element_count} elements</div>
+      <div class="toolbar">
+        <button class="btn" id="run-breakdown">Run Extraction</button>
+        <div class="progress-wrap" id="run-progress" style="display:none;">
+          <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+          <span class="progress-label" id="progress-label"></span>
+        </div>
+        <div class="export-group">
+          <span class="export-label">Export:</span>
+          <button class="btn secondary export-btn" data-fmt="fdx">FDX</button>
+          <button class="btn secondary export-btn" data-fmt="fadein">Fade In</button>
+          <button class="btn secondary export-btn" data-fmt="csv">CSV</button>
+          <button class="btn secondary export-btn" data-fmt="pdf">PDF</button>
+        </div>
+      </div>
+      <div id="run-error"></div>
       <div class="category-filters" id="cat-filters">
         <button class="cat-chip active" data-cat="">All</button>
         ${presentCats.map((c) => `
@@ -223,6 +239,9 @@
           history.replaceState(null, '', `#/project/${projectId}/scene/${activeSceneId}`);
           renderSceneList();
           renderElementPanel();
+        });
+        row.addEventListener('dblclick', () => {
+          navigate(`#/project/${projectId}/scene/${row.dataset.id}`);
         });
       });
     }
@@ -269,8 +288,146 @@
       });
     });
 
+    // --- export buttons ---
+    app.querySelectorAll('.export-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const fmt = btn.dataset.fmt;
+        btn.textContent = '...';
+        btn.disabled = true;
+        try {
+          const result = await apiPost(`/api/projects/${projectId}/export`, { format: fmt });
+          if (result.files && result.files.length) {
+            result.files.forEach((f) => {
+              const a = document.createElement('a');
+              a.href = `/exports/${f.split('/').pop()}`;
+              a.download = f.split('/').pop();
+              a.click();
+            });
+          }
+        } catch (err) {
+          alert(`Export failed: ${err.message}`);
+        }
+        btn.textContent = fmt.toUpperCase();
+        btn.disabled = false;
+      });
+    });
+
+    // --- run extraction + progress polling ---
+    const runBtn = document.getElementById('run-breakdown');
+    const progressWrap = document.getElementById('run-progress');
+    const progressFill = document.getElementById('progress-fill');
+    const progressLabel = document.getElementById('progress-label');
+    const runErrorEl = document.getElementById('run-error');
+
+    function updateProgress(status) {
+      progressWrap.style.display = '';
+      const total = status.scenes_total || 0;
+      const done = status.scenes_completed || 0;
+      const pct = total ? Math.round((done / total) * 100) : 0;
+      progressFill.style.width = `${pct}%`;
+      progressLabel.textContent = status.status === 'running'
+        ? `Running: ${done}/${total} scenes`
+        : `${status.status} (${done}/${total} scenes)`;
+    }
+
+    function pollStatus() {
+      const poll = async () => {
+        let status;
+        try {
+          status = await apiGet(`/api/projects/${projectId}/breakdown/status`);
+        } catch (err) {
+          runErrorEl.innerHTML = `<div class="error-banner">Status check failed: ${escapeHtml(err.message)}</div>`;
+          runBtn.disabled = false;
+          return;
+        }
+        if (status.status === 'none') return;
+        updateProgress(status);
+        if (status.status === 'running') {
+          setTimeout(poll, 1500);
+        } else {
+          runBtn.disabled = false;
+          if (status.errors && status.errors.length) {
+            runErrorEl.innerHTML = `<div class="error-banner">Extraction finished with ${status.errors.length} error(s).</div>`;
+          }
+          render();
+        }
+      };
+      poll();
+    }
+
+    runBtn.addEventListener('click', async () => {
+      runBtn.disabled = true;
+      runErrorEl.innerHTML = '';
+      progressWrap.style.display = '';
+      progressLabel.textContent = 'Starting…';
+      progressFill.style.width = '0%';
+      try {
+        await apiPost(`/api/projects/${projectId}/breakdown/run`, {
+          passes: ['extract', 'coreference'],
+          provider_overrides: { extract: 'deepseek', coreference: 'deepseek' },
+        });
+        pollStatus();
+      } catch (err) {
+        runErrorEl.innerHTML = `<div class="error-banner">Failed to start extraction: ${escapeHtml(err.message)}</div>`;
+        runBtn.disabled = false;
+      }
+    });
+
+    if (project.last_run && project.last_run.status === 'running') {
+      runBtn.disabled = true;
+      pollStatus();
+    }
+
     renderSceneList();
     await renderElementPanel();
+  }
+
+  // --- scene detail ---
+
+  async function renderScene(state) {
+    const { projectId, sceneId } = state;
+    const [scene, project] = await Promise.all([
+      apiGet(`/api/projects/${projectId}/scenes/${sceneId}`),
+      apiGet(`/api/projects/${projectId}`),
+    ]);
+
+    setCrumbs([
+      { label: 'Projects', href: '#/' },
+      { label: project.name, href: `#/project/${projectId}` },
+      { label: scene.scene_number || scene.slugline },
+    ]);
+
+    app.innerHTML = `
+      <div class="detail-header">
+        <h1>${escapeHtml(scene.slugline || '')}</h1>
+        <span class="badge">${escapeHtml(scene.interior_exterior || '')} &middot; ${escapeHtml(scene.time_of_day || '')}</span>
+      </div>
+      <div class="subtitle">
+        Location: ${escapeHtml(scene.location || '')} &middot;
+        Page: ${scene.page_count_eighths}/8 &middot;
+        ${scene.element_count} elements
+        ${scene.synopsis ? `<br>${escapeHtml(scene.synopsis)}` : ''}
+      </div>
+
+      <div class="detail-section">
+        <h3>Elements</h3>
+        <div class="element-grid">
+          ${scene.elements.length ? scene.elements.map(elementCard).join('') : '<div class="empty">No elements in this scene.</div>'}
+        </div>
+      </div>
+
+      <div class="detail-section">
+        <h3>Scene Text</h3>
+        <pre class="scene-body">${escapeHtml(scene.raw_body || '')}</pre>
+      </div>
+
+      ${scene.descriptions && scene.descriptions.length ? `
+        <div class="detail-section">
+          <h3>Descriptions</h3>
+          ${scene.descriptions.map(descBlock).join('')}
+        </div>
+      ` : ''}
+    `;
   }
 
   function elementCard(e) {
@@ -304,6 +461,12 @@
         <h1 style="margin:0;">${escapeHtml(element.name)}</h1>
       </div>
 
+      <div class="toolbar">
+        <button class="btn" id="build-bible">Build Bible</button>
+        <button class="btn secondary" id="gen-descriptions">Generate Scene Descriptions</button>
+        <span id="desc-status" style="margin-left:8px;font-size:12px;color:var(--text-dim);"></span>
+      </div>
+
       <div class="detail-section">
         <h3>Edit</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
@@ -318,7 +481,7 @@
 
       <div class="detail-section">
         <h3>Descriptions</h3>
-        ${element.descriptions.length ? element.descriptions.map(descBlock).join('') : '<div class="empty">No descriptions yet.</div>'}
+        ${element.descriptions.length ? element.descriptions.map(descBlock).join('') : '<div class="empty">No descriptions yet. Generate a bible first.</div>'}
       </div>
 
       <div class="detail-section">
@@ -333,6 +496,49 @@
         </div>
       </div>
     `;
+
+    // --- bible / description buttons ---
+    const statusEl = document.getElementById('desc-status');
+    const bibleBtn = document.getElementById('build-bible');
+    const genBtn = document.getElementById('gen-descriptions');
+
+    async function updateElementData() {
+      const fresh = await apiGet(`/api/projects/${projectId}/elements/${elemId}`);
+      const descSection = document.querySelector('.detail-section:nth-child(4)');
+      if (descSection) {
+        const h3 = descSection.querySelector('h3');
+        descSection.innerHTML = `
+          <h3>Descriptions</h3>
+          ${fresh.descriptions.length ? fresh.descriptions.map(descBlock).join('') : '<div class="empty">No descriptions yet. Generate a bible first.</div>'}
+        `;
+      }
+    }
+
+    bibleBtn.addEventListener('click', async () => {
+      bibleBtn.disabled = true;
+      statusEl.textContent = 'Building bible…';
+      try {
+        await apiPost(`/api/projects/${projectId}/elements/${elemId}/bible`, { provider: 'deepseek' });
+        statusEl.textContent = 'Bible built!';
+        await updateElementData();
+      } catch (err) {
+        statusEl.textContent = `Failed: ${err.message}`;
+      }
+      bibleBtn.disabled = false;
+    });
+
+    genBtn.addEventListener('click', async () => {
+      genBtn.disabled = true;
+      statusEl.textContent = 'Generating scene descriptions…';
+      try {
+        await apiPost(`/api/projects/${projectId}/elements/${elemId}/describe`, { provider: 'deepseek' });
+        statusEl.textContent = 'Descriptions generated!';
+        await updateElementData();
+      } catch (err) {
+        statusEl.textContent = `Failed: ${err.message}`;
+      }
+      genBtn.disabled = false;
+    });
 
     document.getElementById('save-element').addEventListener('click', async () => {
       const updates = {
@@ -351,18 +557,64 @@
 
   function descBlock(d) {
     const scope = d.scene_id ? `Scene delta &middot; v${d.version}` : `${escapeHtml(d.description_type || 'Bible')} &middot; v${d.version}`;
+    let body = '';
+    try {
+      const obj = JSON.parse(d.content);
+      if (obj.immutable) {
+        body += '<div class="desc-group"><strong>Immutable</strong><ul>';
+        Object.entries(obj.immutable).forEach(([k, v]) => {
+          if (v) body += `<li>${escapeHtml(k.replace(/_/g, ' '))}: ${escapeHtml(String(v))}</li>`;
+        });
+        body += '</ul></div>';
+      }
+      if (obj.mutable_baseline) {
+        body += '<div class="desc-group"><strong>Mutable baseline</strong><ul>';
+        Object.entries(obj.mutable_baseline).forEach(([k, v]) => {
+          if (v) body += `<li>${escapeHtml(k.replace(/_/g, ' '))}: ${escapeHtml(String(v))}</li>`;
+        });
+        body += '</ul></div>';
+      }
+      if (obj.visible_this_scene) {
+        body += '<div class="desc-group"><strong>Visible this scene</strong><ul>';
+        Object.entries(obj.visible_this_scene).forEach(([k, v]) => {
+          if (v) body += `<li>${escapeHtml(k.replace(/_/g, ' '))}: ${escapeHtml(String(v))}</li>`;
+        });
+        body += '</ul></div>';
+      }
+      if (obj.scene_context) {
+        body += '<div class="desc-group"><strong>Scene context</strong><ul>';
+        Object.entries(obj.scene_context).forEach(([k, v]) => {
+          if (v) body += `<li>${escapeHtml(k.replace(/_/g, ' '))}: ${escapeHtml(String(v))}</li>`;
+        });
+        body += '</ul></div>';
+      }
+      if (obj.continuity_changes && obj.continuity_changes.length) {
+        body += `<div class="desc-group"><strong>Changes</strong><ul>${obj.continuity_changes.map(c => `<li>${escapeHtml(c)}</li>`).join('')}</ul></div>`;
+      }
+      if (obj.full_composite_prompt) {
+        body += `<div class="desc-group"><strong>Full prompt</strong><pre style="white-space:pre-wrap;font-size:12px;">${escapeHtml(obj.full_composite_prompt)}</pre></div>`;
+      }
+      if (obj.unspecified_fields && obj.unspecified_fields.length) {
+        body += `<div class="desc-group"><strong style="color:var(--danger);">Unspecified (needs human input)</strong>: ${escapeHtml(obj.unspecified_fields.join(', '))}</div>`;
+      }
+      if (obj.inference_tier) {
+        body += `<div class="desc-meta" style="margin-top:4px;">Inference: ${escapeHtml(obj.inference_tier)}</div>`;
+      }
+      if (obj.confidence != null) {
+        body += `<div class="desc-meta">Confidence: ${(obj.confidence * 100).toFixed(0)}%</div>`;
+      }
+    } catch {
+      body = escapeHtml(d.content);
+    }
     return `
       <div class="description-block">
         <div class="desc-meta">${scope}</div>
-        <div>${escapeHtml(d.content)}</div>
+        ${body}
       </div>
     `;
   }
 
   // --- bootstrap ---
-  // Server-rendered initial_data is only present for the very first paint
-  // (via ?project_id=), so hand off to the hash router immediately after.
-
   if (!location.hash && initialData.project) {
     navigate(`#/project/${initialData.project.id}`);
   } else {
