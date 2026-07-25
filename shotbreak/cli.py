@@ -306,6 +306,23 @@ def list_breaks_cmd(
     typer.echo(f"  {len(breaks)} total")
 
 
+@app.command()
+def serve(
+    data_dir: Path = typer.Option("./data", "--data-dir", "-d", help="Directory for database and project data"),
+    config_path: Path = typer.Option("config.yaml", "--config", "-c", help="Path to config.yaml"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind"),
+    port: int = typer.Option(8190, "--port", "-p", help="Port to bind"),
+):
+    """Start the web review UI (FastAPI + vanilla JS)."""
+    import os
+
+    import uvicorn
+
+    os.environ["SHOTBREAK_DATA_DIR"] = str(data_dir)
+    os.environ["SHOTBREAK_CONFIG_PATH"] = str(config_path)
+    uvicorn.run("shotbreak.web.server:app", host=host, port=port)
+
+
 def main():
     app()
 
