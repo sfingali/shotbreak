@@ -143,6 +143,70 @@ def run_status(
         typer.echo(f"  Errors: {len(info['errors'])}")
 
 
+@app.command()
+def export(
+    project_id: int = typer.Argument(..., help="Project ID to export"),
+    format: str = typer.Option(
+        "sex,fdx,fadein,csv,pdf", "--format", "-f",
+        help="Comma-separated formats: sex,mms10,fdx,fadein,csv,pdf",
+    ),
+    output_dir: Path = typer.Option(
+        "./exports", "--output-dir", "-o", help="Directory to write export files to"
+    ),
+    strict_mms: bool = typer.Option(
+        False, "--strict-mms",
+        help="Refuse to emit unconfirmed/inferred fields in .sex/.MMS10 exports",
+    ),
+    data_dir: Path = typer.Option("./data", "--data-dir", "-d", help="Directory for database"),
+):
+    """Export a project's breakdown to one or more deterministic formats."""
+    formats = [f.strip().lower() for f in format.split(",") if f.strip()]
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"project_{project_id}"
+
+    for fmt in formats:
+        try:
+            if fmt in ("sex", "mms10"):
+                ext = "sex" if fmt == "sex" else "MMS10"
+                out_path = output_dir / f"{stem}.{ext}"
+                result = service.export_mms(
+                    project_id, fmt, data_dir=data_dir, strict=strict_mms, output_path=out_path
+                )
+                typer.echo(f"  [{fmt}] wrote {result['file_path']} ({len(result['bytes'])} bytes)")
+                for w in result["warnings"]:
+                    typer.echo(f"    ! {w}")
+            elif fmt == "fdx":
+                data = service.export_fdx(project_id, data_dir=data_dir)
+                out_path = output_dir / f"{stem}.fdx"
+                out_path.write_bytes(data)
+                typer.echo(f"  [fdx] wrote {out_path} ({len(data)} bytes)")
+            elif fmt == "fadein":
+                data = service.export_fadein(project_id, data_dir=data_dir)
+                out_path = output_dir / f"{stem}.fadein"
+                out_path.write_bytes(data)
+                typer.echo(f"  [fadein] wrote {out_path} ({len(data)} bytes)")
+            elif fmt == "csv":
+                scenes_csv, elements_csv = service.export_csv(project_id, data_dir=data_dir)
+                scenes_path = output_dir / f"{stem}_scenes.csv"
+                elements_path = output_dir / f"{stem}_elements.csv"
+                scenes_path.write_bytes(scenes_csv)
+                elements_path.write_bytes(elements_csv)
+                typer.echo(f"  [csv] wrote {scenes_path} ({len(scenes_csv)} bytes)")
+                typer.echo(f"  [csv] wrote {elements_path} ({len(elements_csv)} bytes)")
+            elif fmt == "pdf":
+                data = service.export_pdf(project_id, data_dir=data_dir)
+                out_path = output_dir / f"{stem}_breakdown.pdf"
+                out_path.write_bytes(data)
+                typer.echo(f"  [pdf] wrote {out_path} ({len(data)} bytes)")
+            else:
+                typer.echo(f"  Unknown format '{fmt}', skipping", err=True)
+        except Exception as e:
+            typer.echo(f"  [{fmt}] Error: {e}", err=True)
+            raise typer.Exit(code=1)
+
+    typer.echo(f"✓ Exported project {project_id} to {output_dir}")
+
+
 def main():
     app()
 

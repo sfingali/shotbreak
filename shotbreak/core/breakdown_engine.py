@@ -217,7 +217,7 @@ def run_extract_pass(
 
         for elem in result.elements:
             element_id = get_or_create_element(
-                conn, project_id, elem["category"], elem["name"], elem["element_type"]
+                conn, project_id, elem["category"], elem["name"], elem.get("element_type", "practical")
             )
             conn.execute(
                 "INSERT INTO scene_element (scene_id, element_id, context, quantity, ai_confidence) "

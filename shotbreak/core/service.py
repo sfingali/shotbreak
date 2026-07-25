@@ -212,6 +212,85 @@ def run_breakdown(
     return {"run_id": run_id, "status": status, "passes": pass_summaries, "errors": all_errors}
 
 
+def export_mms(
+    project_id: int,
+    format: str,
+    data_dir: str | Path = "./data",
+    strict: bool = False,
+    output_path: str | Path | None = None,
+) -> dict:
+    """Export a project to .sex or .MMS10 (Screenwriter XML). Both formats are
+    experimental — see core/mms_export.py. If output_path is given, the file
+    is written and recorded in the mms_export table.
+
+    Returns {"bytes": ..., "warnings": [...], "file_path": str | None}.
+    """
+    from shotbreak.core import mms_export as _mms_export
+
+    if format not in ("sex", "mms10"):
+        raise ValueError(f"Unknown MMS format '{format}' — expected 'sex' or 'mms10'")
+
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+
+    if format == "sex":
+        data, warnings = _mms_export.export_sex(conn, project_id, strict=strict)
+    else:
+        data, warnings = _mms_export.export_mms10(conn, project_id, strict=strict)
+
+    file_path = None
+    if output_path is not None:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(data)
+        file_path = str(output_path)
+        conn.execute(
+            "INSERT INTO mms_export (project_id, format, file_path) VALUES (?, ?, ?)",
+            (project_id, format, file_path),
+        )
+        conn.commit()
+
+    return {"bytes": data, "warnings": warnings, "file_path": file_path}
+
+
+def export_fdx(project_id: int, data_dir: str | Path = "./data") -> bytes:
+    """Export a project as Final Draft XML (.fdx). Best-effort schema, see
+    core/exporters.py."""
+    from shotbreak.core import exporters as _exporters
+
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+    return _exporters.export_fdx(conn, project_id)
+
+
+def export_fadein(project_id: int, data_dir: str | Path = "./data") -> bytes:
+    """Export a project as Fade In XML (.fadein). Best-effort schema, see
+    core/exporters.py."""
+    from shotbreak.core import exporters as _exporters
+
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+    return _exporters.export_fadein(conn, project_id)
+
+
+def export_csv(project_id: int, data_dir: str | Path = "./data") -> tuple[bytes, bytes]:
+    """Export a project as (scenes_csv, elements_csv) bytes."""
+    from shotbreak.core import exporters as _exporters
+
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+    return _exporters.export_csv(conn, project_id)
+
+
+def export_pdf(project_id: int, data_dir: str | Path = "./data") -> bytes:
+    """Export per-scene PDF breakdown sheets for a project."""
+    from shotbreak.core import exporters as _exporters
+
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+    return _exporters.export_pdf(conn, project_id)
+
+
 def get_run_status(run_id: int, data_dir: str | Path = "./data") -> dict:
     """Fetch a breakdown_run's progress/status plus its cost rollup from llm_call_log."""
     db_path = Path(data_dir) / "shotbreak.db"
