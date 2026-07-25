@@ -324,3 +324,50 @@ def api_generate_scene_descriptions(project_id: int, elem_id: int, body: Descrip
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Config / Providers
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/config")
+def api_get_config():
+    """Return the raw config YAML for editing."""
+    try:
+        return {"yaml": CONFIG_PATH.read_text(encoding="utf-8"), "path": str(CONFIG_PATH)}
+    except FileNotFoundError:
+        return {"yaml": "", "path": str(CONFIG_PATH)}
+
+
+@app.post("/api/config")
+def api_save_config(body: dict):
+    """Save raw YAML config. Overwrites config.yaml."""
+    yaml_text = body.get("yaml", "")
+    if not yaml_text.strip():
+        raise HTTPException(status_code=400, detail="Config cannot be empty")
+    CONFIG_PATH.write_text(yaml_text, encoding="utf-8")
+    return {"status": "saved", "path": str(CONFIG_PATH)}
+
+
+@app.get("/api/providers")
+def api_list_providers():
+    """Return parsed provider list (name, kind, model) without exposing API keys."""
+    import yaml
+    providers = []
+    default = ""
+    try:
+        raw = CONFIG_PATH.read_text(encoding="utf-8")
+        cfg = yaml.safe_load(raw) or {}
+        default = cfg.get("default_provider", "")
+        for name, pc in cfg.get("providers", {}).items():
+            providers.append({
+                "name": name,
+                "kind": pc.get("kind", ""),
+                "model": pc.get("model", ""),
+                "base_url": pc.get("base_url", ""),
+                "has_key": bool(pc.get("api_key", "") and pc["api_key"] not in ("", "placeholder")),
+            })
+    except Exception:
+        pass
+    return {"providers": providers, "default": default}

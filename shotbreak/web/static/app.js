@@ -65,6 +65,7 @@
       }
       return { view: 'breakdown', projectId, sceneId: null };
     }
+    if (parts[0] === 'settings') return { view: 'settings' };
     return { view: 'projects' };
   }
 
@@ -90,6 +91,7 @@
       if (state.view === 'breakdown') await renderBreakdown(state);
       else if (state.view === 'scene') await renderScene(state);
       else if (state.view === 'element') await renderElement(state);
+      else if (state.view === 'settings') await renderSettings();
       else await renderProjects();
     } catch (err) {
       app.innerHTML = `<div class="error-banner">Failed to load: ${escapeHtml(err.message)}</div>`;
@@ -612,6 +614,59 @@
         ${body}
       </div>
     `;
+  }
+
+  // --- settings ---
+
+  async function renderSettings() {
+    setCrumbs([{ label: 'Settings' }]);
+
+    const [cfg, pvd] = await Promise.all([
+      apiGet('/api/config'),
+      apiGet('/api/providers'),
+    ]);
+
+    app.innerHTML = `
+      <h1>Configuration</h1>
+      <div class="subtitle">Manage API keys, providers, and models</div>
+
+      <div class="detail-section">
+        <h3>Providers</h3>
+        <div class="provider-list">
+          ${pvd.providers.length ? pvd.providers.map((p) => `
+            <div class="provider-row">
+              <span class="provider-name">${escapeHtml(p.name)}</span>
+              <span class="provider-kind badge">${escapeHtml(p.kind)}</span>
+              <span class="provider-model">${escapeHtml(p.model)}</span>
+              <span class="provider-key-status ${p.has_key ? 'has-key' : 'no-key'}">${p.has_key ? 'Key set' : 'No key'}</span>
+              ${p.name === pvd.default ? '<span class="badge" style="background:var(--accent);color:var(--bg);">Default</span>' : ''}
+            </div>
+          `).join('') : '<div class="empty">No providers configured.</div>'}
+        </div>
+      </div>
+
+      <div class="detail-section">
+        <h3>Raw Config (YAML)</h3>
+        <textarea id="config-yaml" class="config-editor" spellcheck="false">${escapeHtml(cfg.yaml)}</textarea>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+          <button class="btn" id="save-config">Save</button>
+          <span id="config-status" style="font-size:12px;color:var(--text-dim);"></span>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('save-config').addEventListener('click', async () => {
+      const yaml = document.getElementById('config-yaml').value;
+      const statusEl = document.getElementById('config-status');
+      try {
+        await apiPost('/api/config', { yaml });
+        statusEl.textContent = 'Saved! Restart server to apply provider list changes.';
+        statusEl.style.color = 'var(--cat-props)';
+      } catch (err) {
+        statusEl.textContent = `Save failed: ${err.message}`;
+        statusEl.style.color = 'var(--danger)';
+      }
+    });
   }
 
   // --- bootstrap ---
