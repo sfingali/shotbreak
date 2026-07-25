@@ -207,6 +207,105 @@ def export(
     typer.echo(f"✓ Exported project {project_id} to {output_dir}")
 
 
+@app.command()
+def bible(
+    project_id: int = typer.Argument(..., help="Project ID"),
+    element_id: int = typer.Option(..., "--element-id", "-e", help="Element (character) ID to build bible for"),
+    provider: str = typer.Option("deepseek", "--provider", help="LLM provider for bible construction"),
+    data_dir: Path = typer.Option("./data", "--data-dir", "-d"),
+    config_path: Path = typer.Option("config.yaml", "--config", "-c"),
+):
+    """Build a character bible by reading the full character arc."""
+    try:
+        result = service.generate_character_bible(
+            project_id, element_id, provider_name=provider,
+            data_dir=data_dir, config_path=config_path,
+        )
+        typer.echo(f"Bible for {result['character']} (bible_id={result['bible_id']})")
+        typer.echo(f"  Scenes in arc: {result['scene_count']}")
+        typer.echo(f"  Immutable traits: {list(result['immutable'].keys())}")
+        if result["unspecified_fields"]:
+            typer.echo(f"  Unspecified (needs human input): {', '.join(result['unspecified_fields'])}")
+        typer.echo(f"  Tokens: {result['tokens_in']} in / {result['tokens_out']} out")
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def describe(
+    project_id: int = typer.Argument(..., help="Project ID"),
+    element_id: int = typer.Option(..., "--element-id", "-e", help="Element (character) ID to generate descriptions for"),
+    scene_ids: str = typer.Option(None, "--scene-ids", "-s", help="Optional comma-separated scene IDs to scope to"),
+    provider: str = typer.Option("deepseek", "--provider", help="LLM provider"),
+    data_dir: Path = typer.Option("./data", "--data-dir", "-d"),
+    config_path: Path = typer.Option("config.yaml", "--config", "-c"),
+):
+    """Generate per-scene physical descriptions for a character."""
+    sid_list = [int(x.strip()) for x in scene_ids.split(",")] if scene_ids else None
+    try:
+        result = service.generate_scene_descriptions(
+            project_id, element_id, provider_name=provider,
+            scene_ids=sid_list, data_dir=data_dir, config_path=config_path,
+        )
+        typer.echo(f"{result['element']}: {result['scenes_rendered']} rendered, "
+                   f"{result.get('scenes_skipped', 0)} skipped, {result['scenes_errored']} errors")
+        for err in result.get("errors", []):
+            typer.echo(f"  Scene {err['scene_id']}: {err['error']}", err=True)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def setting(
+    project_id: int = typer.Argument(..., help="Project ID"),
+    scope: str = typer.Option(..., "--scope", help="Setting scope: global, location, group"),
+    scope_key: str = typer.Option("", "--scope-key", help="Location name or group label"),
+    key: str = typer.Option(..., "--key", "-k", help="Setting key name"),
+    value: str = typer.Option(..., "--value", "-v", help="Setting value/description"),
+    data_dir: Path = typer.Option("./data", "--data-dir", "-d"),
+):
+    """Create or update a hierarchical setting. Changes cascade to dependents."""
+    try:
+        result = service.update_setting(project_id, scope, scope_key, key, value, data_dir=data_dir)
+        typer.echo(f"Setting [{result['setting_id']}] {result['scope']}/{result['scope_key']}/{result['key']} updated")
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command("list-settings")
+def list_settings_cmd(
+    project_id: int = typer.Argument(..., help="Project ID"),
+    scope: str = typer.Option(None, "--scope", help="Filter by scope"),
+    data_dir: Path = typer.Option("./data", "--data-dir", "-d"),
+):
+    """List hierarchical settings for a project."""
+    settings_list = service.list_settings(project_id, scope=scope, data_dir=data_dir)
+    if not settings_list:
+        typer.echo("No settings found.")
+        return
+    for s in settings_list:
+        typer.echo(f"  [{s['id']}] {s['scope']}/{s['scope_key']}/{s['key']}: {s['value'][:80]}")
+
+
+@app.command("list-breaks")
+def list_breaks_cmd(
+    project_id: int = typer.Argument(..., help="Project ID"),
+    status: str = typer.Option("open", "--status", help="Filter by status: open, resolved, dismissed"),
+    data_dir: Path = typer.Option("./data", "--data-dir", "-d"),
+):
+    """List continuity breaks requiring human review."""
+    breaks = service.list_continuity_breaks(project_id, data_dir=data_dir, status=status)
+    if not breaks:
+        typer.echo("No continuity breaks found.")
+        return
+    for b in breaks:
+        typer.echo(f"  [{b['id']}] {b['break_type']}: {b['description'][:100]}")
+    typer.echo(f"  {len(breaks)} total")
+
+
 def main():
     app()
 

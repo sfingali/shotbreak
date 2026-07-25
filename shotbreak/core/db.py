@@ -4,7 +4,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Global writer connection (one per process, WAL mode)
 _WRITER: sqlite3.Connection | None = None
@@ -230,12 +230,56 @@ def _migrations() -> list[str]:
             resolved_at TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS mms_export (
+""",
+        # v2: Phase 3 support — character_era, is_current on descriptions, settings engine tables
+        """
+        ALTER TABLE physical_description ADD COLUMN is_current INTEGER DEFAULT 1;
+
+        CREATE TABLE IF NOT EXISTS character_era (
+            id INTEGER PRIMARY KEY,
+            element_id INTEGER REFERENCES element(id),
+            story_thread_id INTEGER REFERENCES story_thread(id),
+            era_label TEXT NOT NULL,
+            story_date_marker TEXT,
+            scene_id INTEGER REFERENCES scene(id),
+            bible_version_id INTEGER REFERENCES physical_description(id),
+            requires_review INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        INSERT OR REPLACE INTO config (key, value) VALUES ('schema_version', '2');
+
+        CREATE TABLE IF NOT EXISTS setting (
             id INTEGER PRIMARY KEY,
             project_id INTEGER REFERENCES project(id),
-            format TEXT NOT NULL,
-            file_path TEXT,
-            exported_at TEXT DEFAULT (datetime('now'))
+            scope TEXT NOT NULL DEFAULT 'location',
+            scope_key TEXT NOT NULL DEFAULT '',
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            metadata_json TEXT DEFAULT '{}',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(project_id, scope, scope_key, key)
+        );
+
+        CREATE TABLE IF NOT EXISTS setting_dependency (
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER REFERENCES project(id),
+            parent_setting_id INTEGER REFERENCES setting(id),
+            child_type TEXT NOT NULL,
+            child_id INTEGER NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(project_id, parent_setting_id, child_type, child_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS stale_tracker (
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER REFERENCES project(id),
+            target_type TEXT NOT NULL,
+            target_id INTEGER NOT NULL,
+            stale_reason TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(project_id, target_type, target_id)
         );
         """,
     ]
