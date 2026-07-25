@@ -369,3 +369,9 @@ h3 { font-size: 13px; margin: 0 0 8px; color: var(--text-dim); text-transform: u
   resize: vertical;
 }
 .config-editor:focus { outline: none; border-color: var(--accent); }
+
+.provider-select {
+  min-width: 180px;
+  max-width: 260px;
+  cursor: pointer;
+}

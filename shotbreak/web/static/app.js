@@ -176,10 +176,11 @@
 
   async function renderBreakdown(state) {
     const { projectId } = state;
-    const [project, scenesResp, elements] = await Promise.all([
+    const [project, scenesResp, elements, providersData] = await Promise.all([
       apiGet(`/api/projects/${projectId}`),
       apiGet(`/api/projects/${projectId}/scenes?page_size=1000`),
       apiGet(`/api/projects/${projectId}/elements`),
+      apiGet('/api/providers'),
     ]);
     const scenes = scenesResp.scenes;
 
@@ -187,15 +188,21 @@
 
     let activeCategory = '';
     let activeSceneId = state.sceneId || null;
+    const selectedProvider = providersData.default || (providersData.providers[0]?.name || 'deepseek');
 
     const catCounts = {};
     elements.forEach((e) => { catCounts[e.category] = (catCounts[e.category] || 0) + 1; });
     const presentCats = CATEGORIES.filter((c) => catCounts[c]);
 
+    const providerOptions = providersData.providers.map((p) =>
+      `<option value="${p.name}" ${p.name === selectedProvider ? 'selected' : ''}>${escapeHtml(p.name)} (${escapeHtml(p.model)})</option>`
+    ).join('');
+
     app.innerHTML = `
       <h1>${escapeHtml(project.name)}</h1>
       <div class="subtitle">${project.scene_count} scenes &middot; ${project.element_count} elements</div>
       <div class="toolbar">
+        <select class="editable-field provider-select" id="provider-select">${providerOptions}</select>
         <button class="btn" id="run-breakdown">Run Extraction</button>
         <div class="progress-wrap" id="run-progress" style="display:none;">
           <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
@@ -363,10 +370,11 @@
       progressWrap.style.display = '';
       progressLabel.textContent = 'Starting…';
       progressFill.style.width = '0%';
+      const provider = document.getElementById('provider-select').value;
       try {
         await apiPost(`/api/projects/${projectId}/breakdown/run`, {
           passes: ['extract', 'coreference'],
-          provider_overrides: { extract: 'deepseek', coreference: 'deepseek' },
+          provider_overrides: { extract: provider, coreference: provider },
         });
         pollStatus();
       } catch (err) {
