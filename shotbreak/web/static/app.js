@@ -35,6 +35,22 @@
     return res.json();
   }
 
+  async function apiPost(path, body) {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    if (!res.ok) throw new Error(`POST ${path} failed (${res.status})`);
+    return res.json();
+  }
+
+  async function apiPostForm(path, formData) {
+    const res = await fetch(path, { method: 'POST', body: formData });
+    if (!res.ok) throw new Error(`POST ${path} failed (${res.status})`);
+    return res.json();
+  }
+
   // --- routing: #/  |  #/project/:id  |  #/project/:id/scene/:id  |  #/project/:id/element/:id ---
 
   function parseHash() {
@@ -84,17 +100,59 @@
   async function renderProjects() {
     setCrumbs([{ label: 'Projects' }]);
     const projects = await apiGet('/api/projects');
-    if (!projects.length) {
-      app.innerHTML = '<div class="empty">No projects yet. Import a screenplay with <code>shotbreak import-script</code>.</div>';
-      return;
-    }
     app.innerHTML = `
       <h1>Projects</h1>
-      <div class="subtitle">${projects.length} project${projects.length === 1 ? '' : 's'}</div>
-      <div class="project-grid">${projects.map(projectCard).join('')}</div>
+      ${importForm()}
+      <div id="import-error"></div>
+      ${projects.length ? `
+        <div class="subtitle">${projects.length} project${projects.length === 1 ? '' : 's'}</div>
+        <div class="project-grid">${projects.map(projectCard).join('')}</div>
+      ` : '<div class="empty">No projects yet. Import a screenplay above.</div>'}
     `;
     app.querySelectorAll('.project-card').forEach((card) => {
       card.addEventListener('click', () => navigate(`#/project/${card.dataset.id}`));
+    });
+    bindImportForm();
+  }
+
+  function importForm() {
+    return `
+      <form id="import-form" class="panel import-form">
+        <h3>Import screenplay</h3>
+        <div class="import-form-row">
+          <input type="file" id="import-file" accept=".fountain,.fdx,.xml,.pdf" required>
+          <input type="text" id="import-name" class="editable-field" placeholder="Project name (optional)">
+          <button type="submit" class="btn" id="import-submit">Import</button>
+        </div>
+      </form>
+    `;
+  }
+
+  function bindImportForm() {
+    const form = document.getElementById('import-form');
+    const errorEl = document.getElementById('import-error');
+    form.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const fileInput = document.getElementById('import-file');
+      const nameInput = document.getElementById('import-name');
+      const submitBtn = document.getElementById('import-submit');
+      if (!fileInput.files.length) return;
+
+      const formData = new FormData();
+      formData.append('file', fileInput.files[0]);
+      if (nameInput.value.trim()) formData.append('name', nameInput.value.trim());
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Importing…';
+      errorEl.innerHTML = '';
+      try {
+        const result = await apiPostForm('/api/projects', formData);
+        navigate(`#/project/${result.project_id}`);
+      } catch (err) {
+        errorEl.innerHTML = `<div class="error-banner">Import failed: ${escapeHtml(err.message)}</div>`;
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Import';
+      }
     });
   }
 
