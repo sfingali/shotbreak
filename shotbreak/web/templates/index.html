@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shotbreak</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">Shotbreak</a>
+  <nav id="crumbs" class="crumbs"></nav>
+</header>
+
+<main id="app">
+  <div class="loading">Loading&hellip;</div>
+</main>
+
+<script id="initial-data" type="application/json">{{ initial_data | tojson }}</script>
+<script src="/static/app.js"></script>
+</body>
+</html>
