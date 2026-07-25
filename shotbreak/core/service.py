@@ -423,3 +423,270 @@ def list_continuity_breaks(
         params.append(status)
     rows = conn.execute(query, params).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Read-oriented functions backing the web review UI (Phase 5). Reads live here
+# rather than in web/server.py for the same reason writes do: the web layer
+# must stay a thin presentation layer over core.service, never touching
+# core/db.py directly (see module docstring and DESIGN.md §2.2/§5.1).
+# ---------------------------------------------------------------------------
+
+
+def list_projects(data_dir: str | Path = "./data") -> list[dict]:
+    """List all projects with scene/element counts, most recently created first."""
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+    rows = conn.execute(
+        """SELECT p.*,
+                  (SELECT COUNT(*) FROM scene WHERE project_id = p.id) AS scene_count,
+                  (SELECT COUNT(*) FROM element WHERE project_id = p.id) AS element_count
+           FROM project p ORDER BY p.id DESC"""
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_project(project_id: int, data_dir: str | Path = "./data") -> dict:
+    """Project detail: counts by category, and the most recent breakdown run."""
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+    row = conn.execute("SELECT * FROM project WHERE id = ?", (project_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"No project with id {project_id}")
+
+    project = dict(row)
+    project["scene_count"] = conn.execute(
+        "SELECT COUNT(*) AS c FROM scene WHERE project_id = ?", (project_id,)
+    ).fetchone()["c"]
+    project["element_count"] = conn.execute(
+        "SELECT COUNT(*) AS c FROM element WHERE project_id = ?", (project_id,)
+    ).fetchone()["c"]
+    project["category_counts"] = {
+        r["category"]: r["c"]
+        for r in conn.execute(
+            "SELECT category, COUNT(*) AS c FROM element WHERE project_id = ? GROUP BY category",
+            (project_id,),
+        )
+    }
+    last_run = conn.execute(
+        "SELECT * FROM breakdown_run WHERE project_id = ? ORDER BY id DESC LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    project["last_run"] = dict(last_run) if last_run else None
+    return project
+
+
+def list_scenes(
+    project_id: int,
+    page: int = 1,
+    page_size: int = 50,
+    data_dir: str | Path = "./data",
+) -> dict:
+    """Paginated scene list, ordered by story_order, with per-scene element counts."""
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+
+    total = conn.execute(
+        "SELECT COUNT(*) AS c FROM scene WHERE project_id = ?", (project_id,)
+    ).fetchone()["c"]
+
+    page = max(page, 1)
+    offset = (page - 1) * page_size
+    rows = conn.execute(
+        "SELECT * FROM scene WHERE project_id = ? ORDER BY story_order, id LIMIT ? OFFSET ?",
+        (project_id, page_size, offset),
+    ).fetchall()
+
+    scene_ids = [r["id"] for r in rows]
+    counts: dict[int, int] = {}
+    if scene_ids:
+        placeholders = ",".join("?" * len(scene_ids))
+        for r in conn.execute(
+            f"SELECT scene_id, COUNT(*) AS c FROM scene_element "
+            f"WHERE scene_id IN ({placeholders}) GROUP BY scene_id",
+            scene_ids,
+        ):
+            counts[r["scene_id"]] = r["c"]
+
+    scenes = []
+    for r in rows:
+        s = dict(r)
+        s["element_count"] = counts.get(r["id"], 0)
+        scenes.append(s)
+
+    page_size = page_size or 1
+    return {
+        "scenes": scenes,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": (total + page_size - 1) // page_size,
+    }
+
+
+def list_elements(
+    project_id: int,
+    category: str | None = None,
+    data_dir: str | Path = "./data",
+) -> list[dict]:
+    """Elements for a project, optionally filtered by category, with appearance counts."""
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+
+    if category:
+        rows = conn.execute(
+            "SELECT * FROM element WHERE project_id = ? AND category = ? ORDER BY name",
+            (project_id, category),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM element WHERE project_id = ? ORDER BY category, name",
+            (project_id,),
+        ).fetchall()
+
+    element_ids = [r["id"] for r in rows]
+    counts: dict[int, int] = {}
+    if element_ids:
+        placeholders = ",".join("?" * len(element_ids))
+        for r in conn.execute(
+            f"SELECT element_id, COUNT(*) AS c FROM scene_element "
+            f"WHERE element_id IN ({placeholders}) GROUP BY element_id",
+            element_ids,
+        ):
+            counts[r["element_id"]] = r["c"]
+
+    elements = []
+    for r in rows:
+        e = dict(r)
+        e["appearance_count"] = counts.get(r["id"], 0)
+        elements.append(e)
+    return elements
+
+
+def get_element(project_id: int, element_id: int, data_dir: str | Path = "./data") -> dict:
+    """Element detail: descriptions (bible + scene deltas), scene appearances, continuity states."""
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+
+    row = conn.execute(
+        "SELECT * FROM element WHERE id = ? AND project_id = ?", (element_id, project_id)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"No element {element_id} in project {project_id}")
+    element = dict(row)
+
+    element["descriptions"] = [
+        dict(d)
+        for d in conn.execute(
+            "SELECT * FROM physical_description WHERE element_id = ? "
+            "ORDER BY (scene_id IS NOT NULL), version DESC, id DESC",
+            (element_id,),
+        )
+    ]
+
+    element["appearances"] = [
+        dict(a)
+        for a in conn.execute(
+            "SELECT se.*, s.scene_number, s.slugline, s.story_order FROM scene_element se "
+            "JOIN scene s ON se.scene_id = s.id WHERE se.element_id = ? ORDER BY s.story_order",
+            (element_id,),
+        )
+    ]
+
+    element["continuity_states"] = [
+        dict(c)
+        for c in conn.execute(
+            "SELECT cs.*, s.scene_number, s.story_order FROM continuity_state cs "
+            "JOIN scene s ON cs.scene_id = s.id WHERE cs.element_id = ? ORDER BY s.story_order",
+            (element_id,),
+        )
+    ]
+
+    return element
+
+
+def get_scene(project_id: int, scene_id: int, data_dir: str | Path = "./data") -> dict:
+    """Scene detail: tagged elements, scene-specific description deltas, montage beats."""
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+
+    row = conn.execute(
+        "SELECT * FROM scene WHERE id = ? AND project_id = ?", (scene_id, project_id)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"No scene {scene_id} in project {project_id}")
+    scene = dict(row)
+
+    scene["elements"] = [
+        dict(e)
+        for e in conn.execute(
+            "SELECT e.*, se.context, se.quantity, se.notes, se.ai_confidence, se.montage_beat_id "
+            "FROM scene_element se JOIN element e ON se.element_id = e.id "
+            "WHERE se.scene_id = ? ORDER BY e.category, e.name",
+            (scene_id,),
+        )
+    ]
+
+    scene["descriptions"] = [
+        dict(d)
+        for d in conn.execute(
+            "SELECT pd.*, e.name AS element_name FROM physical_description pd "
+            "JOIN element e ON pd.element_id = e.id WHERE pd.scene_id = ? ORDER BY e.name",
+            (scene_id,),
+        )
+    ]
+
+    scene["montage_beats"] = [
+        dict(b)
+        for b in conn.execute(
+            "SELECT * FROM montage_beat WHERE scene_id = ? ORDER BY beat_order", (scene_id,)
+        )
+    ]
+
+    return scene
+
+
+def update_element(
+    project_id: int,
+    element_id: int,
+    updates: dict,
+    data_dir: str | Path = "./data",
+) -> dict:
+    """Edit an element's name/category/element_type from the review UI."""
+    from shotbreak.core.breakdown_engine import CATEGORIES
+
+    allowed = {"name", "category", "element_type"}
+    fields = {k: v for k, v in updates.items() if k in allowed and v}
+    if not fields:
+        raise ValueError("No editable fields provided (allowed: name, category, element_type)")
+    if "category" in fields and fields["category"] not in CATEGORIES:
+        raise ValueError(f"Unknown category '{fields['category']}'")
+
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+    row = conn.execute(
+        "SELECT id FROM element WHERE id = ? AND project_id = ?", (element_id, project_id)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"No element {element_id} in project {project_id}")
+
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    conn.execute(f"UPDATE element SET {set_clause} WHERE id = ?", (*fields.values(), element_id))
+    conn.commit()
+
+    return get_element(project_id, element_id, data_dir=data_dir)
+
+
+def get_latest_breakdown_status(project_id: int, data_dir: str | Path = "./data") -> dict | None:
+    """Status of a project's most recent breakdown_run — lets the UI poll a
+    run it triggered without holding onto a run_id across the request that
+    kicked it off in the background."""
+    db_path = Path(data_dir) / "shotbreak.db"
+    conn = _db.get_db(db_path)
+    row = conn.execute(
+        "SELECT id FROM breakdown_run WHERE project_id = ? ORDER BY id DESC LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return get_run_status(row["id"], data_dir=data_dir)
