@@ -287,3 +287,40 @@ def api_export(project_id: int, body: ExportRequest):
         raise HTTPException(status_code=404, detail=str(e))
 
     raise HTTPException(status_code=400, detail=f"Unknown export format '{body.format}'")
+
+# Mount exports dir for download links
+exports_dir = Path("./exports")
+exports_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/exports", StaticFiles(directory=str(exports_dir)), name="exports")
+
+
+# ---------------------------------------------------------------------------
+# Descriptions
+# ---------------------------------------------------------------------------
+
+
+class DescriptionRequest(BaseModel):
+    provider: str = "deepseek"
+    scene_ids: list[int] | None = None
+
+
+@app.post("/api/projects/{project_id}/elements/{elem_id}/bible")
+def api_generate_bible(project_id: int, elem_id: int, body: DescriptionRequest):
+    try:
+        return service.generate_character_bible(
+            project_id, elem_id, provider_name=body.provider,
+            data_dir=DATA_DIR, config_path=CONFIG_PATH,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/projects/{project_id}/elements/{elem_id}/describe")
+def api_generate_scene_descriptions(project_id: int, elem_id: int, body: DescriptionRequest):
+    try:
+        return service.generate_scene_descriptions(
+            project_id, elem_id, provider_name=body.provider,
+            scene_ids=body.scene_ids, data_dir=DATA_DIR, config_path=CONFIG_PATH,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
