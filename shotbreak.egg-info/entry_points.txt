@@ -1,0 +1,2 @@
+[console_scripts]
+shotbreak = shotbreak.cli:app

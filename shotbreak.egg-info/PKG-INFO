@@ -1,0 +1,29 @@
+Metadata-Version: 2.4
+Name: shotbreak
+Version: 0.1.0
+Summary: AI-powered screenplay breakdown with physical description generation for consistent image prompting and MMS export
+Author: Stephen Fingleton
+License: MIT
+Keywords: screenplay,film,pre-production,breakdown,fountain,ai
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Topic :: Multimedia :: Video
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: rapidfuzz>=3.0
+Requires-Dist: httpx>=0.27
+Requires-Dist: typer>=0.12
+Requires-Dist: pyyaml>=6.0
+Provides-Extra: web
+Requires-Dist: fastapi>=0.115; extra == "web"
+Requires-Dist: jinja2>=3.1; extra == "web"
+Requires-Dist: uvicorn>=0.30; extra == "web"
+Provides-Extra: pdf
+Requires-Dist: pymupdf>=1.24; extra == "pdf"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-cov>=5.0; extra == "dev"
