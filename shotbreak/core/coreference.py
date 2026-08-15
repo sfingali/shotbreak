@@ -196,6 +196,51 @@ def adjudicate_ambiguous_groups(
     return confirmed, response
 
 
+def _merge_scene_element_rows(conn: sqlite3.Connection, element_id: int) -> None:
+    """Merge duplicate scene_element rows for an element after reassignment.
+
+    Keeps the lowest id row per (scene_id, montage_beat_id) and folds the
+    other rows' context/notes/quantity/ai_confidence into it so no tagged
+    scene detail is lost when variants collapse into one element.
+    """
+    rows = conn.execute(
+        "SELECT id, scene_id, montage_beat_id, context, quantity, notes, ai_confidence "
+        "FROM scene_element WHERE element_id = ? "
+        "ORDER BY scene_id, COALESCE(montage_beat_id, -1), id",
+        (element_id,),
+    ).fetchall()
+
+    groups: dict[tuple[int, int | None], list[sqlite3.Row]] = {}
+    for row in rows:
+        groups.setdefault((row["scene_id"], row["montage_beat_id"]), []).append(row)
+
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+
+        keep = group[0]
+        contexts = [r["context"] for r in group if r["context"]]
+        notes = [r["notes"] for r in group if r["notes"]]
+        quantities = [r["quantity"] for r in group if r["quantity"] is not None]
+        confidences = [r["ai_confidence"] for r in group if r["ai_confidence"] is not None]
+
+        conn.execute(
+            "UPDATE scene_element SET context = ?, notes = ?, quantity = ?, ai_confidence = ? "
+            "WHERE id = ?",
+            (
+                " | ".join(dict.fromkeys(contexts)) or keep["context"],
+                " | ".join(dict.fromkeys(notes)) or keep["notes"],
+                max(quantities) if quantities else keep["quantity"],
+                max(confidences) if confidences else keep["ai_confidence"],
+                keep["id"],
+            ),
+        )
+
+        ids = [r["id"] for r in group[1:]]
+        placeholders = ",".join("?" for _ in ids)
+        conn.execute(f"DELETE FROM scene_element WHERE id IN ({placeholders})", ids)
+
+
 def merge_elements(
     conn: sqlite3.Connection,
     project_id: int,
@@ -203,9 +248,10 @@ def merge_elements(
     cluster: Cluster,
 ) -> int | None:
     """Merge all element rows named in cluster.members (same project+category)
-    into one canonical element. Writes element_alias rows for every member and
-    reassigns/dedupes scene_element. Returns the canonical element_id, or None
-    if no matching rows were found.
+    into one canonical element. Writes element_alias rows for every member,
+    reassigns dependent rows, and dedupes scene_element while preserving its
+    fields. Returns the canonical element_id, or None if no matching rows were
+    found.
     """
     if not cluster.members:
         return None
@@ -222,26 +268,42 @@ def merge_elements(
     canonical_row = next((r for r in rows if r["name"] == cluster.canonical), rows[0])
     canonical_id = canonical_row["id"]
 
+    # Reassign or delete dependents before deleting the element rows, since
+    # these tables have non-cascade FK REFERENCES element(id).
+    element_dependent_tables = (
+        ("physical_description", "element_id"),
+        ("continuity_state", "element_id"),
+        ("character_era", "element_id"),
+        ("reference_image", "element_id"),
+        ("element_alias", "element_id"),
+    )
+
     for row in rows:
         if row["id"] == canonical_id:
             continue
+
+        for table, column in element_dependent_tables:
+            conn.execute(
+                f"UPDATE {table} SET {column} = ? WHERE {column} = ?",
+                (canonical_id, row["id"]),
+            )
+        conn.execute(
+            "UPDATE character_relationship SET element_id_a = ? WHERE element_id_a = ?",
+            (canonical_id, row["id"]),
+        )
+        conn.execute(
+            "UPDATE character_relationship SET element_id_b = ? WHERE element_id_b = ?",
+            (canonical_id, row["id"]),
+        )
         conn.execute(
             "UPDATE scene_element SET element_id = ? WHERE element_id = ?",
             (canonical_id, row["id"]),
         )
         conn.execute("DELETE FROM element WHERE id = ?", (row["id"],))
 
-    # Drop duplicate scene_element rows created by the reassignment above
-    # (e.g. the same scene had already been tagged with both variants).
-    conn.execute(
-        """DELETE FROM scene_element
-           WHERE element_id = ? AND id NOT IN (
-               SELECT MIN(id) FROM scene_element
-               WHERE element_id = ?
-               GROUP BY scene_id, COALESCE(montage_beat_id, -1)
-           )""",
-        (canonical_id, canonical_id),
-    )
+    # Collapse scene_element rows that are now duplicates, preserving the
+    # merged fields rather than discarding all but MIN(id).
+    _merge_scene_element_rows(conn, canonical_id)
 
     for member in cluster.members:
         conn.execute(
