@@ -105,6 +105,25 @@ class TestFdxParser:
         assert scenes[0].narrative_position_hint == "flashback"
 
 
+class TestFdxSceneNumbers:
+    def test_scene_number_on_paragraph(self):
+        # Final Draft and Fade In write the number on the Scene Heading
+        # <Paragraph>, not on <SceneProperties>.
+        fdx = """<?xml version="1.0"?>
+<FinalDraft><Content>
+  <Paragraph Type="Scene Heading" Number="12A">
+    <SceneProperties Length="1/8" Page="1"/><Text>INT. ROOM - DAY</Text>
+  </Paragraph>
+  <Paragraph Type="Scene Heading" Number="7">
+    <SceneProperties Length="1/8" Page="1" Number="99"/><Text>EXT. YARD - NIGHT</Text>
+  </Paragraph>
+  <Paragraph Type="Scene Heading"><Text>INT. HALL - DAY</Text></Paragraph>
+</Content></FinalDraft>"""
+        scenes = parse_fdx(fdx)
+        assert [(s.scene_number, s.scene_number_source) for s in scenes] == [
+            ("12A", "script"), ("7", "script"), ("3", "auto")]
+
+
 class TestFdxSluglineParsing:
     def test_standard_int(self):
         r = _parse_slugline("INT. KITCHEN - HOUSE - DAY")

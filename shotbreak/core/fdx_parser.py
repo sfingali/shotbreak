@@ -147,7 +147,14 @@ def parse_fdx(text: str) -> list[ParsedScene]:
             current_chars = []
             has_dual = False
             sp = para.find("SceneProperties")
-            current_scene_num = sp.get("Number", "") if sp is not None else ""
+            # Final Draft and Fade In put the scene number on the Scene
+            # Heading <Paragraph Number="12A">; SceneProperties/@Number is
+            # only a fallback (same fix as open-fdx-toolkit).
+            current_scene_num = (
+                para.get("Number")
+                or (sp.get("Number") if sp is not None else "")
+                or ""
+            ).strip()
             current_page_eighths = (
                 _estimate_page_eighths(sp.get("Length", "1/8"))
                 if sp is not None
