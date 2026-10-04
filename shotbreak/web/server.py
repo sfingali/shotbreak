@@ -17,11 +17,15 @@ can't otherwise be handed constructor args:
 from __future__ import annotations
 
 import os
+import secrets
+import sqlite3
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Literal
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
+import yaml
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -31,6 +35,10 @@ from shotbreak.core import service
 
 DATA_DIR = Path(os.environ.get("SHOTBREAK_DATA_DIR", "./data"))
 CONFIG_PATH = Path(os.environ.get("SHOTBREAK_CONFIG_PATH", "config.yaml"))
+EXPORTS_DIR = DATA_DIR / "exports"
+
+API_KEY = os.environ.get("SHOTBREAK_API_KEY", "")
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient", "testserver"}
 
 _WEB_DIR = Path(__file__).parent
 templates = Jinja2Templates(directory=str(_WEB_DIR / "templates"))
@@ -41,6 +49,25 @@ app.mount("/static", StaticFiles(directory=str(_WEB_DIR / "static")), name="stat
 
 def _not_found(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=404, detail=str(exc))
+
+def _require_api_key(request: Request) -> None:
+    """Protect config endpoints.
+
+    If SHOTBREAK_API_KEY is configured, require an X-API-Key header.
+    Otherwise, only allow loopback clients (plus TestClient).
+    """
+    if API_KEY:
+        supplied = request.headers.get("x-api-key", "")
+        if not secrets.compare_digest(supplied, API_KEY):
+            raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
+        return
+
+    client_host = request.client.host if request.client else ""
+    if client_host not in _LOOPBACK_HOSTS:
+        raise HTTPException(
+            status_code=403,
+            detail="SHOTBREAK_API_KEY must be set to expose the Shotbreak API beyond localhost",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -115,14 +142,32 @@ async def api_import_project(
     """Upload a screenplay and import it as a new project."""
     uploads_dir = DATA_DIR / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
-    dest = uploads_dir / file.filename
+
+    original_filename = file.filename or "upload"
+    safe_name = Path(original_filename).name
+    if safe_name in ("", ".", ".."):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    dest = uploads_dir / safe_name
     if dest.exists():
-        dest = uploads_dir / f"{int(time.time())}_{file.filename}"
+        dest = uploads_dir / f"{int(time.time())}_{safe_name}"
     dest.write_bytes(await file.read())
 
     try:
-        return service.import_script(dest, project_name=name, lang=lang, data_dir=DATA_DIR)
-    except (FileNotFoundError, NotImplementedError) as e:
+        return service.import_script(
+            dest,
+            project_name=name or Path(original_filename).stem,
+            lang=lang,
+            data_dir=DATA_DIR,
+        )
+    except (
+        FileNotFoundError,
+        NotImplementedError,
+        ValueError,
+        AttributeError,
+        sqlite3.Error,
+        ET.ParseError,
+    ) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -249,7 +294,7 @@ def api_continuity_breaks(project_id: int, status: str | None = "open"):
 
 @app.post("/api/projects/{project_id}/export")
 def api_export(project_id: int, body: ExportRequest):
-    output_dir = Path("./exports")
+    output_dir = EXPORTS_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = f"project_{project_id}"
 
@@ -289,9 +334,8 @@ def api_export(project_id: int, body: ExportRequest):
     raise HTTPException(status_code=400, detail=f"Unknown export format '{body.format}'")
 
 # Mount exports dir for download links
-exports_dir = Path("./exports")
-exports_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/exports", StaticFiles(directory=str(exports_dir)), name="exports")
+EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/exports", StaticFiles(directory=str(EXPORTS_DIR)), name="exports")
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +375,7 @@ def api_generate_scene_descriptions(project_id: int, elem_id: int, body: Descrip
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/config")
+@app.get("/api/config", dependencies=[Depends(_require_api_key)])
 def api_get_config():
     """Return the raw config YAML for editing."""
     try:
@@ -340,12 +384,16 @@ def api_get_config():
         return {"yaml": "", "path": str(CONFIG_PATH)}
 
 
-@app.post("/api/config")
+@app.post("/api/config", dependencies=[Depends(_require_api_key)])
 def api_save_config(body: dict):
     """Save raw YAML config. Overwrites config.yaml."""
     yaml_text = body.get("yaml", "")
     if not yaml_text.strip():
         raise HTTPException(status_code=400, detail="Config cannot be empty")
+    try:
+        yaml.safe_load(yaml_text)
+    except yaml.YAMLError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
     CONFIG_PATH.write_text(yaml_text, encoding="utf-8")
     return {"status": "saved", "path": str(CONFIG_PATH)}
 
@@ -353,7 +401,6 @@ def api_save_config(body: dict):
 @app.get("/api/providers")
 def api_list_providers():
     """Return parsed provider list (name, kind, model) without exposing API keys."""
-    import yaml
     providers = []
     default = ""
     try:

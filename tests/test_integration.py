@@ -105,6 +105,25 @@ class TestFdxParser:
         assert scenes[0].narrative_position_hint == "flashback"
 
 
+class TestFdxSceneNumbers:
+    def test_scene_number_on_paragraph(self):
+        # Final Draft and Fade In write the number on the Scene Heading
+        # <Paragraph>, not on <SceneProperties>.
+        fdx = """<?xml version="1.0"?>
+<FinalDraft><Content>
+  <Paragraph Type="Scene Heading" Number="12A">
+    <SceneProperties Length="1/8" Page="1"/><Text>INT. ROOM - DAY</Text>
+  </Paragraph>
+  <Paragraph Type="Scene Heading" Number="7">
+    <SceneProperties Length="1/8" Page="1" Number="99"/><Text>EXT. YARD - NIGHT</Text>
+  </Paragraph>
+  <Paragraph Type="Scene Heading"><Text>INT. HALL - DAY</Text></Paragraph>
+</Content></FinalDraft>"""
+        scenes = parse_fdx(fdx)
+        assert [(s.scene_number, s.scene_number_source) for s in scenes] == [
+            ("12A", "script"), ("7", "script"), ("3", "auto")]
+
+
 class TestFdxSluglineParsing:
     def test_standard_int(self):
         r = _parse_slugline("INT. KITCHEN - HOUSE - DAY")
@@ -181,6 +200,96 @@ class TestFadeinParser:
         assert len(scenes) == 2
         assert scenes[0].slugline == "INT. HOUSE - DAY"
         assert scenes[1].slugline == "EXT. GARDEN - DAY"
+
+
+
+# ── Service-level integration (the production paths) ──
+
+class TestServiceIntegration:
+    def test_import_fdx_via_service(self, tmp_path):
+        pytest.importorskip("fdx_parser")
+        from shotbreak.core import db as shotbreak_db
+        from shotbreak.core import service
+
+        shotbreak_db.close_db()
+        fdx_path = tmp_path / "service_import.fdx"
+        fdx_path.write_text(
+            """<?xml version="1.0"?>
+<FinalDraft>
+  <Content>
+    <Paragraph Type="Scene Heading">
+      <SceneProperties Length="2/8" Page="1" Number="1"/>
+      <Text>INT. KITCHEN - HOUSE - DAY</Text>
+    </Paragraph>
+    <Paragraph Type="Action"><Text>Ben enters.</Text></Paragraph>
+    <Paragraph Type="Character"><Text>ALEX</Text></Paragraph>
+    <Paragraph Type="Dialogue"><Text>Hello.</Text></Paragraph>
+    <Paragraph Type="Scene Heading">
+      <SceneProperties Length="1/8" Page="2" Number="2"/>
+      <Text>EXT. STREET - NIGHT</Text>
+    </Paragraph>
+    <Paragraph Type="Action"><Text>He leaves.</Text></Paragraph>
+  </Content>
+</FinalDraft>""",
+            encoding="utf-8",
+        )
+
+        result = service.import_script(
+            fdx_path, project_name="fdx-service", data_dir=tmp_path
+        )
+
+        assert result["script_format"] == "fdx"
+        assert result["scene_count"] == 2
+        assert result["characters_found"] == 1
+
+        conn = shotbreak_db.get_db(tmp_path / "shotbreak.db")
+        scenes = conn.execute(
+            "SELECT scene_number, is_montage, has_dual_dialogue "
+            "FROM scene WHERE project_id = ? ORDER BY story_order",
+            (result["project_id"],),
+        ).fetchall()
+        assert [s["scene_number"] for s in scenes] == ["1", "2"]
+        assert all(s["is_montage"] == 0 for s in scenes)
+        assert all(s["has_dual_dialogue"] == 0 for s in scenes)
+        shotbreak_db.close_db()
+
+    def test_export_sex_via_service(self, tmp_path):
+        pytest.importorskip("pyoms")
+        from shotbreak.core import db as shotbreak_db
+        from shotbreak.core import service
+        from shotbreak.core.mms_export import ExperimentalFormatError
+
+        shotbreak_db.close_db()
+        conn = shotbreak_db.get_db(tmp_path / "shotbreak.db")
+        conn.execute("INSERT INTO project (id, name) VALUES (1, 'sex-service')")
+        conn.execute(
+            "INSERT INTO scene "
+            "(id, project_id, scene_number, slugline, interior_exterior, location, "
+            "time_of_day, page_count_eighths, raw_body) "
+            "VALUES (1, 1, '1', 'INT. ROOM - DAY', 'INT', 'ROOM', 'DAY', 2, '')"
+        )
+        conn.execute(
+            "INSERT INTO element (id, project_id, name, category, element_type) "
+            "VALUES (1, 1, 'Ben', 'cast', 'character')"
+        )
+        conn.execute(
+            "INSERT INTO element (id, project_id, name, category, element_type) "
+            "VALUES (2, 1, 'Wallet', 'props', 'practical')"
+        )
+        conn.execute("INSERT INTO scene_element (scene_id, element_id) VALUES (1, 1)")
+        conn.execute("INSERT INTO scene_element (scene_id, element_id) VALUES (1, 2)")
+        conn.commit()
+
+        result = service.export_mms(1, "sex", data_dir=tmp_path)
+
+        assert result["bytes"].startswith(b"SSI*")
+        assert b"Ben" in result["bytes"]
+        assert b"Wallet" in result["bytes"]
+
+        with pytest.raises(ExperimentalFormatError):
+            service.export_mms(1, "sex", data_dir=tmp_path, strict=True)
+
+        shotbreak_db.close_db()
 
 
 # ── Breakdown Engine (schema validation, element creation) ──

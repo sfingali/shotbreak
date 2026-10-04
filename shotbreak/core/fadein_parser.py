@@ -43,6 +43,8 @@ def _detect_narrative(slugline: str) -> str | None:
 
 def parse_fadein(text: str) -> list[ParsedScene]:
     """Parse Fade In XML text into ParsedScene objects."""
+    if "<!DOCTYPE" in text.upper():
+        raise ValueError("Fade In XML containing a DOCTYPE is not allowed for security reasons")
     root = ET.fromstring(text)
     # Root is <document type="Fade In Pro"> containing <content>
     content = root.find("content")

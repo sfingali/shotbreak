@@ -8,3 +8,11 @@ exports/
 .DS_Store
 *.db-shm
 *.db-wal
+
+# Personal config and screenplay drafts are never committed
+config.yaml
+*.fdx
+*.fountain
+*.fadein
+*.sex
+*.MMS10

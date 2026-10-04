@@ -57,7 +57,7 @@ def import_script(
     if script_format == "fountain":
         scenes = _parse_fountain(raw_text, lang=lang)
     elif script_format == "fdx":
-        from shotbreak.core.fdx_parser import parse_fdx as _parse_fdx
+        from fdx_parser import parse_fdx as _parse_fdx
 
         scenes = _parse_fdx(raw_text)
     elif script_format == "fadein":
@@ -106,7 +106,7 @@ def import_script(
                 sc.slugline, sc.interior_exterior, sc.location, sc.set_name,
                 sc.time_of_day, sc.page_eighths,
                 "\n".join(sc.body_lines),
-                int(sc.has_dual_dialogue), int(sc.is_montage),
+                int(sc.has_dual_dialogue), int(getattr(sc, "is_montage", False)),
                 sc.narrative_position_hint or "present",
                 thread_id, order,
                 sc.story_date_marker,
@@ -115,7 +115,7 @@ def import_script(
         scene_id = cur.lastrowid
 
         # Insert montage beats
-        for beat in sc.montage_beats:
+        for beat in getattr(sc, "montage_beats", []):
             conn.execute(
                 "INSERT INTO montage_beat (scene_id, beat_order, beat_text, location_hint) VALUES (?, ?, ?, ?)",
                 (scene_id, beat.beat_order, beat.beat_text, beat.location_hint),
@@ -242,7 +242,101 @@ def export_mms(
     conn = _db.get_db(db_path)
 
     if format == "sex":
-        data, warnings = _mms_export.export_sex(conn, project_id, strict=strict)
+        if strict:
+            inferred = [
+                k for k, v in _mms_export.SEX_FIELD_STATUS.items() if v == "inferred"
+            ]
+            raise _mms_export.ExperimentalFormatError(
+                "--strict-mms refuses .sex export: the following fields are still "
+                f"inferred, not confirmed against a real MMS import: {', '.join(inferred)}. "
+                "Re-run without --strict-mms to get a best-effort (experimental) file, "
+                "or supply real sample .sex files to confirm the structure first "
+                "(see docs/format-sex.md)."
+            )
+
+        from pyoms.models import Category, Element, Scene, Schedule, Slugline
+        from pyoms.sex_builder import build_sex
+
+        project = conn.execute(
+            "SELECT name FROM project WHERE id = ?", (project_id,)
+        ).fetchone()
+        if project is None:
+            raise ValueError(f"No project with id {project_id}")
+
+        element_rows = conn.execute(
+            "SELECT id, name, category FROM element WHERE project_id = ? ORDER BY id",
+            (project_id,),
+        ).fetchall()
+
+        scene_rows = conn.execute(
+            "SELECT id, scene_number, interior_exterior, location, time_of_day, "
+            "page_count_eighths, synopsis FROM scene WHERE project_id = ? "
+            "ORDER BY story_order, id",
+            (project_id,),
+        ).fetchall()
+
+        scene_element_rows = conn.execute(
+            "SELECT se.scene_id, se.element_id FROM scene_element se "
+            "JOIN scene s ON s.id = se.scene_id WHERE s.project_id = ?",
+            (project_id,),
+        ).fetchall()
+
+        schedule = Schedule(title=project["name"])
+
+        mms_categories = list(_mms_export.CONFIRMED_MMS_CATEGORIES)
+        seen_categories = set(mms_categories)
+        for elem in element_rows:
+            mms_cat = _mms_export.DB_CATEGORY_TO_MMS.get(
+                elem["category"], elem["category"].replace("_", " ").title()
+            )
+            if mms_cat not in seen_categories:
+                mms_categories.append(mms_cat)
+                seen_categories.add(mms_cat)
+
+        for cat_name in mms_categories:
+            schedule.add_category(Category(
+                name=cat_name,
+                type=(
+                    "standard"
+                    if cat_name in _mms_export.CONFIRMED_MMS_CATEGORIES
+                    else "custom"
+                ),
+            ))
+
+        elements_by_db_id: dict[int, Element] = {}
+        for elem in element_rows:
+            mms_cat = _mms_export.DB_CATEGORY_TO_MMS.get(
+                elem["category"], elem["category"].replace("_", " ").title()
+            )
+            pyoms_element = Element(
+                id=f"e{elem['id']}", name=elem["name"], category=mms_cat
+            )
+            schedule.add_element(pyoms_element)
+            elements_by_db_id[elem["id"]] = pyoms_element
+
+        scene_elements: dict[int, list[int]] = {}
+        for row in scene_element_rows:
+            scene_elements.setdefault(row["scene_id"], []).append(row["element_id"])
+
+        for row in scene_rows:
+            scene = Scene(
+                scene_number=row["scene_number"],
+                slugline=Slugline(
+                    interior_exterior=row["interior_exterior"] or "INT",
+                    location=row["location"] or "",
+                    time_of_day=row["time_of_day"] or "DAY",
+                ),
+                page_count=row["page_count_eighths"] or 1,
+                synopsis=row["synopsis"],
+            )
+            for elem_db_id in scene_elements.get(row["id"], []):
+                pyoms_element = elements_by_db_id.get(elem_db_id)
+                if pyoms_element is not None:
+                    scene.add_element(pyoms_element)
+            schedule.add_scene(scene)
+
+        data = build_sex(schedule)
+        warnings = ["Generated by pyoms/open-moviemagic-toolkit — SEX scene-record structure is inferred. Manual QA in MMS recommended."]
     else:
         data, warnings = _mms_export.export_mms10(conn, project_id, strict=strict)
 

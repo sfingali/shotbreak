@@ -4,10 +4,10 @@ import sqlite3
 import threading
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
-# Global writer connection (one per process, WAL mode)
-_WRITER: sqlite3.Connection | None = None
+# Global writer connections (one per resolved path, WAL mode)
+_WRITERS: dict[Path, sqlite3.Connection] = {}
 _WRITER_LOCK = threading.Lock()
 
 
@@ -282,17 +282,34 @@ def _migrations() -> list[str]:
             UNIQUE(project_id, target_type, target_id)
         );
         """,
+        # v3: export ledger — mms_export table (service.export_mms records file paths)
+        """
+        CREATE TABLE IF NOT EXISTS mms_export (
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER REFERENCES project(id),
+            format TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        INSERT OR REPLACE INTO config (key, value) VALUES ('schema_version', '3');
+        """,
     ]
 
 
 def get_db(db_path: str | Path) -> sqlite3.Connection:
-    """Get or create the writer connection. Thread-safe, WAL mode."""
-    global _WRITER
-    db_path = Path(db_path)
+    """Get or create a writer connection for db_path. Thread-safe, WAL mode.
+
+    Connections are cached per resolved path so different data_dir values
+    get their own SQLite connection instead of sharing the first one opened.
+    """
+    global _WRITERS
+    db_path = Path(db_path).resolve()
 
     with _WRITER_LOCK:
-        if _WRITER is not None:
-            return _WRITER
+        conn = _WRITERS.get(db_path)
+        if conn is not None:
+            return conn
 
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_path), check_same_thread=False)
@@ -310,14 +327,17 @@ def get_db(db_path: str | Path) -> sqlite3.Connection:
         for i in range(current, len(migrations)):
             conn.executescript(migrations[i])
 
-        _WRITER = conn
+        _WRITERS[db_path] = conn
         return conn
 
 
 def close_db() -> None:
-    """Close the writer connection (for cleanup)."""
-    global _WRITER
+    """Close all cached writer connections (for cleanup)."""
+    global _WRITERS
     with _WRITER_LOCK:
-        if _WRITER:
-            _WRITER.close()
-            _WRITER = None
+        for conn in _WRITERS.values():
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+        _WRITERS.clear()
